@@ -1,12 +1,13 @@
-const API_BASE = 'http://127.0.0.1:8000/api';
-const MEDIA_BASE = 'http://127.0.0.1:8000';
+// En Docker (proxy nginx): VITE_API_BASE=/api, VITE_MEDIA_BASE vacío (mismo origen)
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api';
+const MEDIA_BASE = import.meta.env.VITE_MEDIA_BASE ?? (import.meta.env.VITE_API_BASE ? '' : 'http://127.0.0.1:8000');
 
 /** Construye la URL absoluta del archivo de media (video/audio). */
 export function getMediaUrl(archivoPath) {
   if (!archivoPath) return '';
   if (archivoPath.startsWith('http')) return archivoPath;
   const path = archivoPath.startsWith('/') ? archivoPath : `/${archivoPath}`;
-  return `${MEDIA_BASE}${path}`;
+  return MEDIA_BASE ? `${MEDIA_BASE}${path}` : path;
 }
 
 let onUnauthorized = null;

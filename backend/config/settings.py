@@ -108,9 +108,14 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
 
-# CORS para React (puerto por defecto Vite 5173)
+# CORS: desarrollo (Vite 5173) y Docker (nginx 3000)
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
 ]
+# En Docker, el navegador puede usar otro host (ej. IP del servidor); añade aquí o usa variable de entorno
+if os.environ.get('CORS_ORIGINS'):
+    CORS_ALLOWED_ORIGINS.extend(os.environ.get('CORS_ORIGINS', '').split(','))
 CORS_ALLOW_CREDENTIALS = True
