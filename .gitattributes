@@ -1,0 +1,3 @@
+# Normalize line endings for text files (LF in repo; checkout follows OS).
+* text=auto
+*.{png,jpg,jpeg,gif,ico,woff,woff2} binary
