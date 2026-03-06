@@ -51,6 +51,7 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import WarningAmberIcon from '@mui/icons-material/WarningAmber';
 import CloseIcon from '@mui/icons-material/Close';
+import DownloadIcon from '@mui/icons-material/Download';
 import { useAuth } from '../context/AuthContext';
 import PacienteForm from '../components/PacienteForm';
 import { useThemeMode } from '../context/ThemeContext';
@@ -62,6 +63,7 @@ import {
   getVideos,
   uploadVideo,
   getMediaUrl,
+  downloadBackup,
   createUser,
   ROLES,
 } from '../api';
@@ -111,6 +113,7 @@ export default function Dashboard() {
   const [section, setSection] = useState('list');
   const [anchorEl, setAnchorEl] = useState(null);
   const [createUserOpen, setCreateUserOpen] = useState(false);
+  const [downloadingBackup, setDownloadingBackup] = useState(false);
   const [newPacienteForUpload, setNewPacienteForUpload] = useState(null);
   const [expandedVerPacienteId, setExpandedVerPacienteId] = useState(null);
   const [searchText, setSearchText] = useState('');
@@ -358,6 +361,26 @@ export default function Dashboard() {
           >
             <ListItemIcon><PersonAddIcon fontSize="small" /></ListItemIcon>
             <ListItemText primary="Crear usuario" />
+          </MenuItem>
+        )}
+        {isAdmin && (
+          <MenuItem
+            disabled={downloadingBackup}
+            onClick={async () => {
+              setAnchorEl(null);
+              setDownloadingBackup(true);
+              setError('');
+              try {
+                await downloadBackup();
+              } catch (err) {
+                setError(err.message);
+              } finally {
+                setDownloadingBackup(false);
+              }
+            }}
+          >
+            <ListItemIcon><DownloadIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary={downloadingBackup ? 'Generando…' : 'Descargar copia de seguridad (.zip)'} />
           </MenuItem>
         )}
         <MenuItem

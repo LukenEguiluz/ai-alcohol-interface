@@ -8,6 +8,7 @@ from .views import (
     RolesView,
     PacienteViewSet,
     VideoPacienteViewSet,
+    BackupView,
 )
 
 router = DefaultRouter()
@@ -19,5 +20,6 @@ urlpatterns = [
     path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/roles/', RolesView.as_view(), name='roles'),
+    path('backup/', BackupView.as_view(), name='backup'),
     path('', include(router.urls)),
 ]

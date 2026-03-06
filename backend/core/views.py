@@ -1,3 +1,12 @@
+import os
+import subprocess
+import tempfile
+import zipfile
+import shutil
+from datetime import datetime
+
+from django.conf import settings
+from django.http import HttpResponse
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -133,3 +142,63 @@ class VideoPacienteViewSet(viewsets.ModelViewSet):
             VideoPacienteSerializer(video).data,
             status=status.HTTP_201_CREATED,
         )
+
+
+class BackupView(APIView):
+    """Solo administradores. Descarga un .zip con dump de la BD y todos los archivos media."""
+    permission_classes = [IsAuthenticated, IsAdminUser]
+
+    def get(self, request):
+        tmp = tempfile.mkdtemp()
+        zip_path = None
+        try:
+            db = settings.DATABASES['default']
+            is_pg = db['ENGINE'] == 'django.db.backends.postgresql'
+
+            if is_pg:
+                sql_path = os.path.join(tmp, 'backup.sql')
+                env = os.environ.copy()
+                env['PGPASSWORD'] = db.get('PASSWORD', '')
+                subprocess.run(
+                    [
+                        'pg_dump', '-h', db.get('HOST', 'localhost'),
+                        '-U', db.get('USER', 'postgres'),
+                        '-d', db.get('NAME'),
+                        '-f', sql_path,
+                        '--no-owner', '--no-acl',
+                    ],
+                    env=env,
+                    check=True,
+                    capture_output=True,
+                )
+            else:
+                src = db.get('NAME')
+                if isinstance(src, str) and not os.path.isabs(src):
+                    src = os.path.join(settings.BASE_DIR, src)
+                dest = os.path.join(tmp, 'db.sqlite3')
+                shutil.copy2(src, dest)
+
+            media_root = settings.MEDIA_ROOT
+            if os.path.isdir(media_root):
+                media_dest = os.path.join(tmp, 'media')
+                shutil.copytree(media_root, media_dest, dirs_exist_ok=True)
+
+            zip_path = os.path.join(tempfile.gettempdir(), f'ai-alcohol-backup-{datetime.now().strftime("%Y%m%d-%H%M%S")}.zip')
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for root, _, files in os.walk(tmp):
+                    for f in files:
+                        full = os.path.join(root, f)
+                        arcname = os.path.relpath(full, tmp)
+                        zf.write(full, arcname)
+
+            with open(zip_path, 'rb') as f:
+                response = HttpResponse(f.read(), content_type='application/zip')
+                response['Content-Disposition'] = f'attachment; filename="{os.path.basename(zip_path)}"'
+                return response
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            if zip_path and os.path.exists(zip_path):
+                try:
+                    os.remove(zip_path)
+                except OSError:
+                    pass

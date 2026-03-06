@@ -146,3 +146,26 @@ export async function uploadVideo(pacienteId, file, notas = '') {
   }
   return res.json();
 }
+
+/** Descarga un .zip con la base de datos y todos los archivos (solo administradores). */
+export async function downloadBackup() {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}/backup/`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  await handleResponse(res);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || err.error || 'Error al generar la copia de seguridad');
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition');
+  const match = disposition && disposition.match(/filename="?([^";]+)"?/);
+  const filename = match ? match[1] : `ai-alcohol-backup-${new Date().toISOString().slice(0, 10)}.zip`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
