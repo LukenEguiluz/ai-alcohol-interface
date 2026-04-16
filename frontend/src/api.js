@@ -2,6 +2,8 @@
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000/api';
 const MEDIA_BASE = import.meta.env.VITE_MEDIA_BASE ?? (import.meta.env.VITE_API_BASE ? '' : 'http://127.0.0.1:8000');
 
+const STORAGE_VIEW_AS = 'ai-alcohol-view-as';
+
 /** Construye la URL absoluta del archivo de media (video/audio). */
 export function getMediaUrl(archivoPath) {
   if (!archivoPath) return '';
@@ -20,12 +22,58 @@ function getToken() {
   return localStorage.getItem('access');
 }
 
+/** Rol simulado (solo superuser); cadena vacía = vista normal. */
+export function getViewAsRole() {
+  try {
+    return localStorage.getItem(STORAGE_VIEW_AS) || '';
+  } catch {
+    return '';
+  }
+}
+
+export function setViewAsRole(role) {
+  try {
+    if (!role || role === 'Superusuario') {
+      localStorage.removeItem(STORAGE_VIEW_AS);
+    } else {
+      localStorage.setItem(STORAGE_VIEW_AS, role);
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+export function authHeaders(extra = {}) {
+  const token = getToken();
+  const h = { ...extra };
+  if (token) h.Authorization = `Bearer ${token}`;
+  const va = getViewAsRole();
+  if (va) h['X-View-As-Role'] = va;
+  return h;
+}
+
 async function handleResponse(res) {
   if (res.status === 401) {
     onUnauthorized?.();
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || 'Sesión expirada. Inicia sesión de nuevo.');
   }
+}
+
+function unwrapList(data) {
+  if (data && Array.isArray(data.results)) return data.results;
+  if (Array.isArray(data)) return data;
+  return [];
+}
+
+function buildQuery(params = {}) {
+  const qs = new URLSearchParams();
+  qs.set('page_size', String(params.page_size ?? 200));
+  if (params.proyecto != null && params.proyecto !== '' && params.proyecto !== 'all') {
+    qs.set('proyecto', String(params.proyecto));
+  }
+  const s = qs.toString();
+  return s ? `?${s}` : '';
 }
 
 export async function login(username, password) {
@@ -41,17 +89,31 @@ export async function login(username, password) {
   return res.json();
 }
 
-export const ROLES = ['Administrador', 'Doctor', 'Residente', 'Psicologo', 'Otro'];
+export async function getMe() {
+  const res = await fetch(`${API_BASE}/auth/me/`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    await handleResponse(res);
+    throw new Error('Error al cargar perfil');
+  }
+  return res.json();
+}
 
-export async function createUser(username, password, email = '', role = 'Otro') {
-  const token = getToken();
+export const ROLES = [
+  'Administrador',
+  'Administrador de proyectos',
+  'Doctor',
+  'Residente',
+  'Psicologo',
+  'Otro',
+];
+
+export async function createUser(username, password, email = '', role = 'Otro', proyectoIds = []) {
   const res = await fetch(`${API_BASE}/auth/register/`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ username, password, email, role }),
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ username, password, email, role, proyecto_ids: proyectoIds }),
   });
   if (!res.ok) {
     await handleResponse(res);
@@ -61,26 +123,50 @@ export async function createUser(username, password, email = '', role = 'Otro') 
   return res.json();
 }
 
-export async function getPacientes() {
-  const token = getToken();
-  const res = await fetch(`${API_BASE}/pacientes/`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+export async function getProyectos() {
+  const res = await fetch(`${API_BASE}/proyectos/${buildQuery({ page_size: 500 })}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    await handleResponse(res);
+    throw new Error('Error al cargar proyectos');
+  }
+  return unwrapList(await res.json());
+}
+
+export async function createProyecto({ nombre, hospital_nombre, especialidad_nombre }) {
+  const res = await fetch(`${API_BASE}/proyectos/`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      nombre,
+      hospital_nombre: hospital_nombre || '—',
+      especialidad_nombre: especialidad_nombre || '—',
+    }),
+  });
+  if (!res.ok) {
+    await handleResponse(res);
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || err.nombre?.[0] || JSON.stringify(err) || 'Error al crear proyecto');
+  }
+  return res.json();
+}
+
+export async function getPacientes(params = {}) {
+  const res = await fetch(`${API_BASE}/pacientes/${buildQuery(params)}`, {
+    headers: authHeaders(),
   });
   if (!res.ok) {
     await handleResponse(res);
     throw new Error('Error al cargar pacientes');
   }
-  return res.json();
+  return unwrapList(await res.json());
 }
 
 export async function createPaciente(data) {
-  const token = getToken();
   const res = await fetch(`${API_BASE}/pacientes/`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -92,13 +178,9 @@ export async function createPaciente(data) {
 }
 
 export async function updatePaciente(id, data) {
-  const token = getToken();
   const res = await fetch(`${API_BASE}/pacientes/${id}/`, {
     method: 'PATCH',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(data),
   });
   if (!res.ok) {
@@ -109,35 +191,32 @@ export async function updatePaciente(id, data) {
 }
 
 export async function deletePaciente(id) {
-  const token = getToken();
   const res = await fetch(`${API_BASE}/pacientes/${id}/`, {
     method: 'DELETE',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: authHeaders(),
   });
   if (!res.ok) await handleResponse(res);
 }
 
-export async function getVideos() {
-  const token = getToken();
-  const res = await fetch(`${API_BASE}/videos/`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+export async function getVideos(params = {}) {
+  const res = await fetch(`${API_BASE}/videos/${buildQuery(params)}`, {
+    headers: authHeaders(),
   });
   if (!res.ok) {
     await handleResponse(res);
     throw new Error('Error al cargar videos');
   }
-  return res.json();
+  return unwrapList(await res.json());
 }
 
 export async function uploadVideo(pacienteId, file, notas = '') {
-  const token = getToken();
   const form = new FormData();
   form.append('paciente', pacienteId);
   form.append('archivo', file);
   if (notas) form.append('notas', notas);
   const res = await fetch(`${API_BASE}/videos/`, {
     method: 'POST',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: authHeaders(),
     body: form,
   });
   if (!res.ok) {
@@ -150,9 +229,8 @@ export async function uploadVideo(pacienteId, file, notas = '') {
 
 /** Descarga un .zip con la base de datos y todos los archivos (solo administradores). */
 export async function downloadBackup() {
-  const token = getToken();
   const res = await fetch(`${API_BASE}/backup/`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    headers: authHeaders(),
   });
   await handleResponse(res);
   if (!res.ok) {

@@ -1,5 +1,66 @@
+from datetime import date
+
 from django.db import models
 from django.conf import settings
+from django.utils.text import get_valid_filename
+
+
+class Hospital(models.Model):
+    nombre = models.CharField(max_length=200)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['nombre']
+        verbose_name = 'Hospital'
+        verbose_name_plural = 'Hospitales'
+
+    def __str__(self):
+        return self.nombre
+
+
+class Especialidad(models.Model):
+    nombre = models.CharField(max_length=200)
+    creado_en = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['nombre']
+        verbose_name = 'Especialidad'
+        verbose_name_plural = 'Especialidades'
+
+    def __str__(self):
+        return self.nombre
+
+
+class Proyecto(models.Model):
+    """Estudio o cohorte vinculada a un hospital y una especialidad."""
+    nombre = models.CharField(max_length=200)
+    hospital = models.ForeignKey(
+        Hospital,
+        on_delete=models.PROTECT,
+        related_name='proyectos',
+    )
+    especialidad = models.ForeignKey(
+        Especialidad,
+        on_delete=models.PROTECT,
+        related_name='proyectos',
+    )
+    activo = models.BooleanField(default=True)
+    usuarios = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name='proyectos_asignados',
+        blank=True,
+        help_text='Usuarios que ven y cargan datos de este proyecto.',
+    )
+    creado_en = models.DateTimeField(auto_now_add=True)
+    actualizado_en = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-creado_en']
+        verbose_name = 'Proyecto'
+        verbose_name_plural = 'Proyectos'
+
+    def __str__(self):
+        return f'{self.nombre} ({self.hospital})'
 
 
 class Paciente(models.Model):
@@ -43,6 +104,11 @@ class Paciente(models.Model):
     saludable = models.BooleanField(default=False, help_text='Paciente saludable')
     tiene_cirrosis = models.BooleanField(default=False, verbose_name='Tiene cirrosis')
     tiene_ehm = models.BooleanField(default=False, verbose_name='Tiene EHM (Encefalopatía Hepática Mínima)')
+    proyecto = models.ForeignKey(
+        Proyecto,
+        on_delete=models.PROTECT,
+        related_name='pacientes',
+    )
     creado_por = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -65,6 +131,14 @@ class Paciente(models.Model):
         return ' '.join(partes)
 
 
+def video_paciente_upload_to(instance, filename):
+    """Ruta relativa a MEDIA_ROOT: un directorio por proyecto (proyectos/<id>/videos/AAAA/MM/DD/)."""
+    fn = get_valid_filename(filename) or 'archivo.bin'
+    proyecto_id = instance.paciente.proyecto_id
+    sub = date.today().strftime('%Y/%m/%d')
+    return f'proyectos/{proyecto_id}/videos/{sub}/{fn}'
+
+
 class VideoPaciente(models.Model):
     """Video subido por paciente para procesamiento."""
     paciente = models.ForeignKey(
@@ -72,7 +146,7 @@ class VideoPaciente(models.Model):
         on_delete=models.CASCADE,
         related_name='videos',
     )
-    archivo = models.FileField(upload_to='videos/%Y/%m/%d/')
+    archivo = models.FileField(upload_to=video_paciente_upload_to)
     estado = models.CharField(
         max_length=20,
         choices=[

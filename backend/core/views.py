@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -6,18 +7,25 @@ import shutil
 from datetime import datetime
 
 from django.conf import settings
+from django.contrib.auth.models import User, Group
 from django.http import HttpResponse
 from rest_framework import viewsets, status
+from rest_framework.pagination import PageNumberPagination
+from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
-from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from django.contrib.auth.models import User, Group
+from rest_framework_simplejwt.views import TokenObtainPairView
 
-from .models import Paciente, VideoPaciente
+from .access import es_administrador, es_admin_proyectos_globales, ids_proyectos_usuario
+from .models import Hospital, Especialidad, Proyecto, Paciente, VideoPaciente
 from .serializers import (
     UserSerializer,
+    HospitalSerializer,
+    EspecialidadSerializer,
+    ProyectoSerializer,
+    ProyectoCreateSerializer,
+    ProyectoUpdateSerializer,
     PacienteSerializer,
     PacienteCreateUpdateSerializer,
     VideoPacienteSerializer,
@@ -25,10 +33,33 @@ from .serializers import (
 )
 
 
+class CompactPagination(PageNumberPagination):
+    page_size = 40
+    page_size_query_param = 'page_size'
+    max_page_size = 200
+
+
+class IsAdminProyectosGlobales(BasePermission):
+    """Crear/editar/borrar proyectos y catálogo hospital/especialidad (superuser o Administrador de proyectos)."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and es_admin_proyectos_globales(request),
+        )
+
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
-        data['user'] = UserSerializer(self.user).data
+        request = self.context.get('request')
+        user = User.objects.prefetch_related(
+            'groups',
+            'proyectos_asignados__hospital',
+            'proyectos_asignados__especialidad',
+        ).get(pk=self.user.pk)
+        data['user'] = UserSerializer(user, context={'request': request}).data
         return data
 
 
@@ -36,7 +67,14 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
 
-ROLES_VALIDOS = ['Administrador', 'Doctor', 'Residente', 'Psicologo', 'Otro']
+ROLES_VALIDOS = [
+    'Administrador',
+    'Administrador de proyectos',
+    'Doctor',
+    'Residente',
+    'Psicologo',
+    'Otro',
+]
 
 
 class RolesView(APIView):
@@ -47,19 +85,32 @@ class RolesView(APIView):
         return Response({'roles': ROLES_VALIDOS})
 
 
-def es_administrador(user):
-    return user.is_superuser or user.groups.filter(name='Administrador').exists()
+class MeView(APIView):
+    """Perfil efectivo (respeta X-View-As-Role para superusuarios)."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        u = User.objects.prefetch_related(
+            'groups',
+            'proyectos_asignados__hospital',
+            'proyectos_asignados__especialidad',
+        ).get(pk=request.user.pk)
+        return Response(UserSerializer(u, context={'request': request}).data)
 
 
 class RegisterView(APIView):
-    """Solo administradores pueden crear nuevas cuentas con un rol."""
-    permission_classes = [IsAdminUser]
+    """Solo administradores (rol o staff) crean cuentas y asignan proyectos."""
+
+    permission_classes = [IsAuthenticated]
 
     def post(self, request):
+        if not es_administrador(request) and not request.user.is_staff:
+            return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
         username = request.data.get('username')
         password = request.data.get('password')
         email = request.data.get('email', '')
         role = request.data.get('role', 'Otro')
+        proyecto_ids = request.data.get('proyecto_ids') or request.data.get('proyectos') or []
         if not username or not password:
             return Response(
                 {'error': 'username y password son obligatorios'},
@@ -79,20 +130,59 @@ class RegisterView(APIView):
         if role == 'Administrador':
             user.is_staff = True
             user.save()
+        elif role == 'Administrador de proyectos':
+            user.is_staff = False
+            user.save()
         group = Group.objects.get(name=role)
         user.groups.add(group)
+        if isinstance(proyecto_ids, str):
+            proyecto_ids = [x.strip() for x in proyecto_ids.split(',') if x.strip()]
+        if proyecto_ids:
+            proyectos = Proyecto.objects.filter(id__in=proyecto_ids, activo=True)
+            user.proyectos_asignados.set(proyectos)
+        user = User.objects.prefetch_related(
+            'groups',
+            'proyectos_asignados__hospital',
+            'proyectos_asignados__especialidad',
+        ).get(pk=user.pk)
         return Response(
-            {'user': UserSerializer(user).data, 'message': 'Usuario creado'},
+            {'user': UserSerializer(user, context={'request': request}).data, 'message': 'Usuario creado'},
             status=status.HTTP_201_CREATED,
         )
+
+
+def _paciente_base_queryset(request):
+    ids = ids_proyectos_usuario(request)
+    qs = Paciente.objects.select_related('proyecto', 'proyecto__hospital', 'proyecto__especialidad', 'creado_por')
+    if ids is not None:
+        if not ids:
+            return Paciente.objects.none()
+        qs = qs.filter(proyecto_id__in=ids)
+    return qs
+
+
+def _filter_by_proyecto_param(qs, request):
+    raw = request.query_params.get('proyecto')
+    if not raw:
+        return qs
+    try:
+        pid = int(raw)
+    except (TypeError, ValueError):
+        return Paciente.objects.none()
+    ids = ids_proyectos_usuario(request)
+    if ids is not None and pid not in ids:
+        return Paciente.objects.none()
+    return qs.filter(proyecto_id=pid)
 
 
 class PacienteViewSet(viewsets.ModelViewSet):
     serializer_class = PacienteSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = CompactPagination
 
     def get_queryset(self):
-        return Paciente.objects.filter(creado_por=self.request.user)
+        qs = _paciente_base_queryset(self.request)
+        return _filter_by_proyecto_param(qs, self.request).order_by('-creado_en')
 
     def get_serializer_class(self):
         if self.action in ('create', 'update', 'partial_update'):
@@ -107,12 +197,21 @@ class PacienteViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         return Response(
-            PacienteSerializer(serializer.instance).data,
+            PacienteSerializer(serializer.instance, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
         )
 
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        instance.refresh_from_db()
+        return Response(PacienteSerializer(instance, context={'request': request}).data)
+
     def destroy(self, request, *args, **kwargs):
-        if not es_administrador(request.user):
+        if not es_administrador(request):
             return Response(
                 {'error': 'Solo los administradores pueden eliminar pacientes.'},
                 status=status.HTTP_403_FORBIDDEN,
@@ -122,9 +221,25 @@ class PacienteViewSet(viewsets.ModelViewSet):
 
 class VideoPacienteViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
+    pagination_class = CompactPagination
 
     def get_queryset(self):
-        return VideoPaciente.objects.filter(paciente__creado_por=self.request.user)
+        ids = ids_proyectos_usuario(self.request)
+        qs = VideoPaciente.objects.select_related('paciente', 'paciente__proyecto')
+        if ids is not None:
+            if not ids:
+                return VideoPaciente.objects.none()
+            qs = qs.filter(paciente__proyecto_id__in=ids)
+        raw = self.request.query_params.get('proyecto')
+        if raw:
+            try:
+                pid = int(raw)
+            except (TypeError, ValueError):
+                return VideoPaciente.objects.none()
+            if ids is not None and pid not in ids:
+                return VideoPaciente.objects.none()
+            qs = qs.filter(paciente__proyecto_id=pid)
+        return qs.order_by('-subido_en')
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -135,20 +250,125 @@ class VideoPacienteViewSet(viewsets.ModelViewSet):
         serializer = VideoPacienteUploadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         paciente_id = serializer.validated_data['paciente'].id
-        if not Paciente.objects.filter(id=paciente_id, creado_por=request.user).exists():
+        if not _paciente_base_queryset(request).filter(id=paciente_id).exists():
             return Response({'error': 'Paciente no encontrado'}, status=status.HTTP_404_NOT_FOUND)
         video = serializer.save()
+        video = VideoPaciente.objects.select_related('paciente').get(pk=video.pk)
         return Response(
-            VideoPacienteSerializer(video).data,
+            VideoPacienteSerializer(video, context={'request': request}).data,
             status=status.HTTP_201_CREATED,
         )
 
 
+class HospitalViewSet(viewsets.ModelViewSet):
+    queryset = Hospital.objects.all().order_by('nombre')
+    serializer_class = HospitalSerializer
+    permission_classes = [IsAuthenticated, IsAdminProyectosGlobales]
+
+
+class EspecialidadViewSet(viewsets.ModelViewSet):
+    queryset = Especialidad.objects.all().order_by('nombre')
+    serializer_class = EspecialidadSerializer
+    permission_classes = [IsAuthenticated, IsAdminProyectosGlobales]
+
+
+class ProyectoViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def get_permissions(self):
+        if self.action in ('list', 'retrieve'):
+            return [IsAuthenticated()]
+        return [IsAuthenticated(), IsAdminProyectosGlobales()]
+
+    def get_queryset(self):
+        qs = Proyecto.objects.select_related('hospital', 'especialidad')
+        if es_admin_proyectos_globales(self.request):
+            return qs.order_by('-activo', 'nombre')
+        return qs.filter(activo=True, usuarios=self.request.user).order_by('nombre').distinct()
+
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return ProyectoCreateSerializer
+        if self.action in ('update', 'partial_update'):
+            return ProyectoUpdateSerializer
+        return ProyectoSerializer
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        instance = Proyecto.objects.select_related('hospital', 'especialidad').get(pk=serializer.instance.pk)
+        return Response(ProyectoSerializer(instance).data, status=status.HTTP_201_CREATED)
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        instance.refresh_from_db()
+        instance = Proyecto.objects.select_related('hospital', 'especialidad').get(pk=instance.pk)
+        return Response(ProyectoSerializer(instance).data)
+
+
+def _build_backup_manifest():
+    """Export legible de hospitales, especialidades, proyectos, pacientes y vídeos (rutas + relaciones)."""
+    hospitales = list(Hospital.objects.order_by('id').values('id', 'nombre', 'creado_en'))
+    especialidades = list(Especialidad.objects.order_by('id').values('id', 'nombre', 'creado_en'))
+    proyectos = []
+    for p in Proyecto.objects.select_related('hospital', 'especialidad').order_by('id'):
+        proyectos.append({
+            'id': p.id,
+            'nombre': p.nombre,
+            'activo': p.activo,
+            'hospital_id': p.hospital_id,
+            'hospital_nombre': p.hospital.nombre,
+            'especialidad_id': p.especialidad_id,
+            'especialidad_nombre': p.especialidad.nombre,
+            'creado_en': p.creado_en,
+        })
+    pacientes = []
+    for pa in Paciente.objects.select_related('proyecto').order_by('id'):
+        pacientes.append({
+            'id': pa.id,
+            'proyecto_id': pa.proyecto_id,
+            'proyecto_nombre': pa.proyecto.nombre,
+            'nombre': pa.nombre,
+            'apellido_paterno': pa.apellido_paterno,
+            'apellido_materno': pa.apellido_materno,
+            'creado_por_id': pa.creado_por_id,
+            'creado_en': pa.creado_en,
+        })
+    videos = []
+    for v in VideoPaciente.objects.select_related('paciente', 'paciente__proyecto').order_by('id'):
+        videos.append({
+            'id': v.id,
+            'paciente_id': v.paciente_id,
+            'proyecto_id': v.paciente.proyecto_id,
+            'proyecto_nombre': v.paciente.proyecto.nombre,
+            'ruta_en_media': v.archivo.name if v.archivo else '',
+            'estado': v.estado,
+            'subido_en': v.subido_en,
+            'notas': v.notas or '',
+        })
+    return {
+        'generado_en': datetime.now().isoformat(),
+        'hospitales': hospitales,
+        'especialidades': especialidades,
+        'proyectos': proyectos,
+        'pacientes': pacientes,
+        'videos': videos,
+    }
+
+
 class BackupView(APIView):
-    """Solo administradores. Descarga un .zip con dump de la BD y todos los archivos media."""
-    permission_classes = [IsAuthenticated, IsAdminUser]
+    """Descarga un .zip con BD, carpeta media y manifest.json (solo administradores)."""
+
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if not es_administrador(request) and not request.user.is_staff:
+            return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
         tmp = tempfile.mkdtemp()
         zip_path = None
         try:
@@ -183,7 +403,14 @@ class BackupView(APIView):
                 media_dest = os.path.join(tmp, 'media')
                 shutil.copytree(media_root, media_dest, dirs_exist_ok=True)
 
-            zip_path = os.path.join(tempfile.gettempdir(), f'ai-alcohol-backup-{datetime.now().strftime("%Y%m%d-%H%M%S")}.zip')
+            manifest_path = os.path.join(tmp, 'manifest.json')
+            with open(manifest_path, 'w', encoding='utf-8') as mf:
+                json.dump(_build_backup_manifest(), mf, ensure_ascii=False, indent=2, default=str)
+
+            zip_path = os.path.join(
+                tempfile.gettempdir(),
+                f'ai-alcohol-backup-{datetime.now().strftime("%Y%m%d-%H%M%S")}.zip',
+            )
             with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                 for root, _, files in os.walk(tmp):
                     for f in files:

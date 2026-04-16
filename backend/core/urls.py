@@ -6,18 +6,26 @@ from .views import (
     CustomTokenObtainPairView,
     RegisterView,
     RolesView,
+    MeView,
+    HospitalViewSet,
+    EspecialidadViewSet,
+    ProyectoViewSet,
     PacienteViewSet,
     VideoPacienteViewSet,
     BackupView,
 )
 
 router = DefaultRouter()
+router.register('hospitales', HospitalViewSet, basename='hospital')
+router.register('especialidades', EspecialidadViewSet, basename='especialidad')
+router.register('proyectos', ProyectoViewSet, basename='proyecto')
 router.register('pacientes', PacienteViewSet, basename='paciente')
 router.register('videos', VideoPacienteViewSet, basename='video')
 
 urlpatterns = [
     path('auth/login/', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
     path('auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('auth/me/', MeView.as_view(), name='me'),
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/roles/', RolesView.as_view(), name='roles'),
     path('backup/', BackupView.as_view(), name='backup'),

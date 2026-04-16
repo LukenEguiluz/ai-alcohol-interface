@@ -8,7 +8,16 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY', 'dev-secret-change-in-productio
 
 DEBUG = os.environ.get('DEBUG', 'True').lower() == 'true'
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
+# Producción: DJANGO_ALLOWED_HOSTS=ejemplo.com,www.ejemplo.com (evita '*' y reduce superficie de error).
+_hosts_env = os.environ.get('DJANGO_ALLOWED_HOSTS', '').strip()
+if _hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in _hosts_env.split(',') if h.strip()]
+elif DEBUG:
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1', '*']
+else:
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+
+from corsheaders.defaults import default_headers
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -36,18 +45,21 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'config.urls'
 
+_template_ctx = [
+    'django.template.context_processors.request',
+    'django.contrib.auth.context_processors.auth',
+    'django.contrib.messages.context_processors.messages',
+]
+if DEBUG:
+    _template_ctx.insert(0, 'django.template.context_processors.debug')
+
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
         'DIRS': [],
         'APP_DIRS': True,
         'OPTIONS': {
-            'context_processors': [
-                'django.template.context_processors.debug',
-                'django.template.context_processors.request',
-                'django.contrib.auth.context_processors.auth',
-                'django.contrib.messages.context_processors.messages',
-            ],
+            'context_processors': _template_ctx,
         },
     },
 ]
@@ -63,6 +75,7 @@ if os.environ.get('POSTGRES_DB'):
             'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
             'HOST': os.environ.get('POSTGRES_HOST', 'db'),
             'PORT': os.environ.get('POSTGRES_PORT', '5432'),
+            'CONN_MAX_AGE': int(os.environ.get('DB_CONN_MAX_AGE', '60')),
         }
     }
 else:
@@ -70,6 +83,9 @@ else:
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
+            'OPTIONS': {
+                'timeout': 25,
+            },
         }
     }
 
@@ -89,17 +105,34 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = 'media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+# Medios (vídeos): por defecto backend/media. Para guardar en OneDrive, sincroniza una carpeta
+# con el cliente de OneDrive y apunta MEDIA_ROOT_PATH a esa ruta absoluta (o un volumen montado).
+_media_override = os.environ.get('MEDIA_ROOT_PATH') or os.environ.get('DJANGO_MEDIA_ROOT')
+if _media_override:
+    MEDIA_ROOT = Path(_media_override).expanduser().resolve()
+else:
+    MEDIA_ROOT = BASE_DIR / 'media'
+
+# Tamaño máximo de un vídeo por subida (Full HD ~2 min @ 60 Hz con bitrate alto ≈ 50 Mb/s → ~750 MB + margen).
+# Ajusta con MAX_VIDEO_UPLOAD_MB. En nginx: client_max_body_size >= mismo valor (ej. 900m).
+MAX_VIDEO_UPLOAD_MB = int(os.environ.get('MAX_VIDEO_UPLOAD_MB', '850'))
+MAX_VIDEO_UPLOAD_BYTES = max(1, MAX_VIDEO_UPLOAD_MB) * 1024 * 1024
+
+# Por encima de esto el archivo subido va a temporal en disco, no a RAM (ayuda con vídeos grandes).
+FILE_UPLOAD_MAX_MEMORY_SIZE = min(12 * 1024 * 1024, MAX_VIDEO_UPLOAD_BYTES)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # REST + JWT
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'core.authentication.ViewAsRoleJWTAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
+    ),
+    'DEFAULT_RENDERER_CLASSES': (
+        'rest_framework.renderers.JSONRenderer',
     ),
 }
 
@@ -119,3 +152,20 @@ CORS_ALLOWED_ORIGINS = [
 if os.environ.get('CORS_ORIGINS'):
     CORS_ALLOWED_ORIGINS.extend(os.environ.get('CORS_ORIGINS', '').split(','))
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-view-as-role',
+]
+
+# Menos I/O de logs en producción (DEBUG=False).
+if not DEBUG:
+    LOGGING = {
+        'version': 1,
+        'disable_existing_loggers': False,
+        'handlers': {
+            'console': {'class': 'logging.StreamHandler'},
+        },
+        'root': {'handlers': ['console'], 'level': 'WARNING'},
+        'loggers': {
+            'django.request': {'handlers': ['console'], 'level': 'ERROR', 'propagate': False},
+        },
+    }

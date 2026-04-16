@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { setOnUnauthorized } from '../api';
+import { setOnUnauthorized, getMe, setViewAsRole } from '../api';
 
 const AuthContext = createContext(null);
 
@@ -11,6 +11,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('access');
     localStorage.removeItem('refresh');
     localStorage.removeItem('user');
+    setViewAsRole('');
     setUser(null);
   }, []);
 
@@ -39,8 +40,15 @@ export function AuthProvider({ children }) {
     setUser(data.user);
   };
 
+  const refreshUser = useCallback(async () => {
+    const me = await getMe();
+    localStorage.setItem('user', JSON.stringify(me));
+    setUser(me);
+    return me;
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

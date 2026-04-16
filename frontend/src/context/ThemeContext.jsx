@@ -41,8 +41,8 @@ export function ThemeProvider({ children }) {
             main: mode === 'dark' ? '#10b981' : '#059669',
           },
           background: {
-            default: mode === 'dark' ? '#0c0f1a' : '#f8fafc',
-            paper: mode === 'dark' ? '#1a1f2e' : '#ffffff',
+            default: mode === 'dark' ? '#0b0d12' : '#f1f5f9',
+            paper: mode === 'dark' ? '#121622' : '#ffffff',
           },
           error: { main: '#ef4444' },
           success: { main: '#10b981' },
@@ -50,7 +50,8 @@ export function ThemeProvider({ children }) {
         },
         shape: { borderRadius: 12 },
         typography: {
-          fontFamily: '"Plus Jakarta Sans", system-ui, sans-serif',
+          fontFamily:
+            'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif',
           h1: { fontWeight: 700 },
           h2: { fontWeight: 600 },
           button: { textTransform: 'none', fontWeight: 600 },

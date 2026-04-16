@@ -29,7 +29,9 @@ services:
       POSTGRES_USER: ai_alcohol
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ai_alcohol_secret}
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-secret-change-in-production}
-      DEBUG: "True"
+      DEBUG: ${DEBUG:-True}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      MAX_VIDEO_UPLOAD_MB: ${MAX_VIDEO_UPLOAD_MB:-850}
     volumes:
       - media_data:/app/media
     depends_on:
