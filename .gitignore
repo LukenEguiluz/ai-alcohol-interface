@@ -1,3 +1,6 @@
+# Respaldo local antes de pull-update.sh
+.deploy-backups/
+
 # Backend
 backend/venv/
 backend/.env
