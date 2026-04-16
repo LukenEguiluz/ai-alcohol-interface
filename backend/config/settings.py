@@ -17,6 +17,11 @@ elif DEBUG:
 else:
     ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
+# HTTPS detrás de nginx / dominio público (admin, formularios, cookies SameSite).
+# Ej.: CSRF_TRUSTED_ORIGINS=https://aialcohol.leyluz.com,https://www.leyluz.com
+_csrf_origins = os.environ.get('CSRF_TRUSTED_ORIGINS', '').strip()
+CSRF_TRUSTED_ORIGINS = [x.strip() for x in _csrf_origins.split(',') if x.strip()]
+
 from corsheaders.defaults import default_headers
 
 INSTALLED_APPS = [

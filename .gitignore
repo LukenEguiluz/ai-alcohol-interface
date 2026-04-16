@@ -1,3 +1,6 @@
+# Variables de entorno locales (Docker / despliegue)
+.env
+
 # Respaldo local antes de pull-update.sh
 .deploy-backups/
 

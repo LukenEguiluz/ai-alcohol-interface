@@ -1,5 +1,11 @@
 # Un solo puerto (3000): interfaz en / y API en /api (evitando 8080 y 5000)
 # PostgreSQL: 5433 por si conectas desde fuera
+#
+# Producción (archivo .env junto a este compose; docker compose lo usa para ${VAR}):
+#   DJANGO_ALLOWED_HOSTS=aialcohol.leyluz.com,localhost,127.0.0.1
+#   CSRF_TRUSTED_ORIGINS=https://aialcohol.leyluz.com
+#   DEBUG=False
+#   CORS_ORIGINS=https://aialcohol.leyluz.com
 
 services:
   db:
@@ -31,6 +37,7 @@ services:
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-secret-change-in-production}
       DEBUG: ${DEBUG:-True}
       DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-}
       MAX_VIDEO_UPLOAD_MB: ${MAX_VIDEO_UPLOAD_MB:-850}
     volumes:
       - media_data:/app/media
