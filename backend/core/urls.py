@@ -7,6 +7,7 @@ from .views import (
     RegisterView,
     RolesView,
     MeView,
+    UserAdminViewSet,
     HospitalViewSet,
     EspecialidadViewSet,
     ProyectoViewSet,
@@ -16,6 +17,7 @@ from .views import (
 )
 
 router = DefaultRouter()
+router.register('auth/users', UserAdminViewSet, basename='adminuser')
 router.register('hospitales', HospitalViewSet, basename='hospital')
 router.register('especialidades', EspecialidadViewSet, basename='especialidad')
 router.register('proyectos', ProyectoViewSet, basename='proyecto')

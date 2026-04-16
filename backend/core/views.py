@@ -20,6 +20,9 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from .access import es_administrador, es_admin_proyectos_globales, ids_proyectos_usuario
 from .models import Hospital, Especialidad, Proyecto, Paciente, VideoPaciente
 from .serializers import (
+    ROLES_ASIGNABLE,
+    AdminUserPatchSerializer,
+    AdminUserReadSerializer,
     UserSerializer,
     HospitalSerializer,
     EspecialidadSerializer,
@@ -37,6 +40,12 @@ class CompactPagination(PageNumberPagination):
     page_size = 40
     page_size_query_param = 'page_size'
     max_page_size = 200
+
+
+class AdminUsersPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = 'page_size'
+    max_page_size = 500
 
 
 class IsAdminProyectosGlobales(BasePermission):
@@ -67,14 +76,7 @@ class CustomTokenObtainPairView(TokenObtainPairView):
     serializer_class = CustomTokenObtainPairSerializer
 
 
-ROLES_VALIDOS = [
-    'Administrador',
-    'Administrador de proyectos',
-    'Doctor',
-    'Residente',
-    'Psicologo',
-    'Otro',
-]
+ROLES_VALIDOS = ROLES_ASIGNABLE
 
 
 class RolesView(APIView):
@@ -149,6 +151,80 @@ class RegisterView(APIView):
             {'user': UserSerializer(user, context={'request': request}).data, 'message': 'Usuario creado'},
             status=status.HTTP_201_CREATED,
         )
+
+
+class IsPlatformAdmin(BasePermission):
+    """Gestión de cuentas (Administrador o Administrador de proyectos, vía es_administrador)."""
+
+    def has_permission(self, request, view):
+        return bool(
+            request.user and request.user.is_authenticated and es_administrador(request),
+        )
+
+
+class UserAdminViewSet(viewsets.ModelViewSet):
+    """Listar y editar usuarios (contraseña, rol, proyectos M2M)."""
+
+    permission_classes = [IsAuthenticated, IsPlatformAdmin]
+    pagination_class = AdminUsersPagination
+    http_method_names = ['get', 'patch', 'head', 'options']
+
+    def get_queryset(self):
+        return User.objects.order_by('username').prefetch_related(
+            'groups',
+            'proyectos_asignados__hospital',
+            'proyectos_asignados__especialidad',
+        )
+
+    def get_serializer_class(self):
+        if self.action in ('update', 'partial_update'):
+            return AdminUserPatchSerializer
+        return AdminUserReadSerializer
+
+    def partial_update(self, request, *args, **kwargs):
+        user_obj = self.get_object()
+        if user_obj.is_superuser and not request.user.is_superuser:
+            return Response({'error': 'No autorizado'}, status=status.HTTP_403_FORBIDDEN)
+        serializer = AdminUserPatchSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        if user_obj.is_superuser and data.get('role'):
+            return Response(
+                {'error': 'No se puede cambiar el rol de un superusuario.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not user_obj.is_superuser and data.get('role'):
+            role = data['role']
+            role_names = set(ROLES_ASIGNABLE)
+            for g in list(user_obj.groups.all()):
+                if g.name in role_names:
+                    user_obj.groups.remove(g)
+            user_obj.groups.add(Group.objects.get(name=role))
+            user_obj.is_staff = role == 'Administrador'
+
+        if 'email' in data:
+            user_obj.email = (data.get('email') or '').strip()
+
+        if data.get('password'):
+            user_obj.set_password(data['password'])
+
+        if 'proyecto_ids' in data:
+            proyectos = Proyecto.objects.filter(id__in=data['proyecto_ids'], activo=True)
+            user_obj.proyectos_asignados.set(proyectos)
+
+        user_obj.save()
+        user_obj = User.objects.prefetch_related(
+            'groups',
+            'proyectos_asignados__hospital',
+            'proyectos_asignados__especialidad',
+        ).get(pk=user_obj.pk)
+        return Response(AdminUserReadSerializer(user_obj).data)
+
+    def update(self, request, *args, **kwargs):
+        kwargs['partial'] = True
+        return self.partial_update(request, *args, **kwargs)
 
 
 def _paciente_base_queryset(request):

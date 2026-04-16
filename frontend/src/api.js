@@ -109,6 +109,35 @@ export const ROLES = [
   'Otro',
 ];
 
+export async function getUsers(params = {}) {
+  const qs = new URLSearchParams();
+  qs.set('page_size', String(params.page_size ?? 500));
+  const q = qs.toString();
+  const res = await fetch(`${API_BASE}/auth/users/${q ? `?${q}` : ''}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    await handleResponse(res);
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || err.error || 'Error al cargar usuarios');
+  }
+  return unwrapList(await res.json());
+}
+
+export async function patchUser(userId, body) {
+  const res = await fetch(`${API_BASE}/auth/users/${userId}/`, {
+    method: 'PATCH',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    await handleResponse(res);
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || err.error || JSON.stringify(err) || 'Error al actualizar usuario');
+  }
+  return res.json();
+}
+
 export async function createUser(username, password, email = '', role = 'Otro', proyectoIds = []) {
   const res = await fetch(`${API_BASE}/auth/register/`, {
     method: 'POST',

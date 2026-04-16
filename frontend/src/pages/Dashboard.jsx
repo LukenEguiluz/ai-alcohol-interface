@@ -17,6 +17,13 @@ import {
   CardContent,
   CardActions,
   Button,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
+  Paper,
   TextField,
   FormControl,
   InputLabel,
@@ -56,6 +63,7 @@ import CloseIcon from '@mui/icons-material/Close';
 import DownloadIcon from '@mui/icons-material/Download';
 import ScienceOutlinedIcon from '@mui/icons-material/ScienceOutlined';
 import FolderSpecialOutlinedIcon from '@mui/icons-material/FolderSpecialOutlined';
+import GroupOutlinedIcon from '@mui/icons-material/GroupOutlined';
 import { useAuth } from '../context/AuthContext';
 import PacienteForm from '../components/PacienteForm';
 import { useThemeMode } from '../context/ThemeContext';
@@ -69,6 +77,8 @@ import {
   getMediaUrl,
   downloadBackup,
   createUser,
+  getUsers,
+  patchUser,
   getProyectos,
   createProyecto,
   getViewAsRole,
@@ -109,6 +119,7 @@ const INIT_PACIENTE = {
 };
 
 const INIT_USUARIO = { username: '', password: '', email: '', role: 'Otro', proyectoIds: [] };
+const INIT_EDIT_USUARIO = { email: '', password: '', role: 'Otro', proyectoIds: [] };
 const INIT_NUEVO_PROYECTO = { nombre: '', hospital_nombre: '', especialidad_nombre: '' };
 
 export default function Dashboard() {
@@ -140,6 +151,12 @@ export default function Dashboard() {
   const [newProjectForm, setNewProjectForm] = useState(INIT_NUEVO_PROYECTO);
   const [creatingProject, setCreatingProject] = useState(false);
   const [downloadingBackup, setDownloadingBackup] = useState(false);
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [editUserOpen, setEditUserOpen] = useState(false);
+  const [editUserRow, setEditUserRow] = useState(null);
+  const [editUserForm, setEditUserForm] = useState(INIT_EDIT_USUARIO);
+  const [savingUser, setSavingUser] = useState(false);
   const [newPacienteForUpload, setNewPacienteForUpload] = useState(null);
   const [expandedVerPacienteId, setExpandedVerPacienteId] = useState(null);
   const [searchText, setSearchText] = useState('');
@@ -153,10 +170,12 @@ export default function Dashboard() {
   const [filterEdadMin, setFilterEdadMin] = useState('');
   const [filterEdadMax, setFilterEdadMax] = useState('');
 
-  /** Usuarios, backup, borrar pacientes (rol Administrador / staff). */
+  /** Usuarios, backup, borrar pacientes (Administrador, Administrador de proyectos o staff). */
   const puedeAdminPlataforma =
     user?.puede_administrar_plataforma ??
-    (user?.role === 'Administrador' || user?.is_staff === true);
+    (user?.role === 'Administrador' ||
+      user?.role === 'Administrador de proyectos' ||
+      user?.is_staff === true);
   /** Ver todos los proyectos, filtro «Todos», crear/editar proyectos (superuser o Administrador de proyectos). */
   const puedeEditarProyectosGlobales = Boolean(user?.todos_los_proyectos);
 
@@ -271,6 +290,25 @@ export default function Dashboard() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!user || !puedeAdminPlataforma || section !== 'users') return;
+      setLoadingUsers(true);
+      try {
+        const list = await getUsers();
+        if (!cancelled) setAdminUsers(list);
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) setLoadingUsers(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user, puedeAdminPlataforma, section]);
 
   const defaultProyectoId = useMemo(() => {
     if (proyectoFiltro && opcionesProyectoForm.some((x) => String(x.id) === String(proyectoFiltro))) {
@@ -415,6 +453,41 @@ export default function Dashboard() {
     setSection('list');
   };
 
+  const openEditUser = (row) => {
+    setEditUserRow(row);
+    setEditUserForm({
+      email: row.email || '',
+      password: '',
+      role: row.role === 'Superusuario' ? 'Otro' : row.role || 'Otro',
+      proyectoIds: Array.isArray(row.proyecto_ids) ? [...row.proyecto_ids] : [],
+    });
+    setEditUserOpen(true);
+  };
+
+  const handleSaveEditUser = async (e) => {
+    e.preventDefault();
+    if (!editUserRow) return;
+    setError('');
+    setSavingUser(true);
+    try {
+      const editedId = editUserRow.id;
+      const body = { email: editUserForm.email || '', proyecto_ids: editUserForm.proyectoIds };
+      if (editUserForm.password) body.password = editUserForm.password;
+      if (!editUserRow.is_superuser) body.role = editUserForm.role;
+      await patchUser(editedId, body);
+      setEditUserOpen(false);
+      setEditUserRow(null);
+      setEditUserForm(INIT_EDIT_USUARIO);
+      const list = await getUsers();
+      setAdminUsers(list);
+      if (editedId === user?.id) await refreshUser();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingUser(false);
+    }
+  };
+
   const navContent = (
     <List sx={{ pt: 2, px: 0.5 }}>
       <ListItemButton
@@ -433,11 +506,21 @@ export default function Dashboard() {
           setForm({ ...INIT_PACIENTE, proyecto: defaultProyectoId || '' });
           setNewPacienteForUpload(null);
         }}
-        sx={{ borderRadius: 2 }}
+        sx={{ borderRadius: 2, mb: 0.5 }}
       >
         <ListItemIcon><PersonAddOutlinedIcon fontSize="small" /></ListItemIcon>
         <ListItemText primary="Nuevo paciente" />
       </ListItemButton>
+      {puedeAdminPlataforma && (
+        <ListItemButton
+          selected={section === 'users'}
+          onClick={() => setSection('users')}
+          sx={{ borderRadius: 2 }}
+        >
+          <ListItemIcon><GroupOutlinedIcon fontSize="small" /></ListItemIcon>
+          <ListItemText primary="Usuarios" secondary="Roles y proyectos" />
+        </ListItemButton>
+      )}
     </List>
   );
 
@@ -570,6 +653,17 @@ export default function Dashboard() {
           >
             <ListItemIcon><FolderSpecialOutlinedIcon fontSize="small" /></ListItemIcon>
             <ListItemText primary="Nuevo proyecto" />
+          </MenuItem>
+        )}
+        {puedeAdminPlataforma && (
+          <MenuItem
+            onClick={() => {
+              setSection('users');
+              setAnchorEl(null);
+            }}
+          >
+            <ListItemIcon><GroupOutlinedIcon fontSize="small" /></ListItemIcon>
+            <ListItemText primary="Gestionar usuarios" />
           </MenuItem>
         )}
         {puedeAdminPlataforma && (
@@ -929,6 +1023,62 @@ export default function Dashboard() {
               </>
             )}
 
+            {section === 'users' && puedeAdminPlataforma && (
+              <>
+                <Box sx={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 2, mb: 2.5 }}>
+                  <Box>
+                    <Typography variant="h5" fontWeight={700} sx={{ letterSpacing: -0.3 }}>
+                      Usuarios
+                    </Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Contraseña, rol y proyectos asignados (varios por usuario).
+                    </Typography>
+                  </Box>
+                  {isMobile && (
+                    <Button variant="outlined" size="small" onClick={() => setSection('list')}>
+                      Volver a pacientes
+                    </Button>
+                  )}
+                </Box>
+                {loadingUsers ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', py: 6 }}>
+                    <CircularProgress />
+                  </Box>
+                ) : (
+                  <TableContainer component={Paper} variant="outlined" sx={{ borderRadius: 2 }}>
+                    <Table size="small">
+                      <TableHead>
+                        <TableRow>
+                          <TableCell>Usuario</TableCell>
+                          <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' } }}>Email</TableCell>
+                          <TableCell>Rol</TableCell>
+                          <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>Proyectos</TableCell>
+                          <TableCell align="right"> </TableCell>
+                        </TableRow>
+                      </TableHead>
+                      <TableBody>
+                        {adminUsers.map((row) => (
+                          <TableRow key={row.id} hover>
+                            <TableCell>{row.username}</TableCell>
+                            <TableCell sx={{ display: { xs: 'none', sm: 'table-cell' } }}>{row.email || '—'}</TableCell>
+                            <TableCell>{row.role || '—'}</TableCell>
+                            <TableCell sx={{ display: { xs: 'none', md: 'table-cell' } }}>
+                              {(row.proyectos || []).map((p) => p.nombre).join(', ') || '—'}
+                            </TableCell>
+                            <TableCell align="right">
+                              <Button size="small" startIcon={<EditIcon />} onClick={() => openEditUser(row)}>
+                                Editar
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </TableContainer>
+                )}
+              </>
+            )}
+
             {section === 'create' && newPacienteForUpload && (
               <Card sx={{ maxWidth: 520, width: '100%', mx: 'auto' }} variant="outlined">
                 <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
@@ -974,7 +1124,7 @@ export default function Dashboard() {
         </Box>
       </Box>
 
-      {isMobile && (
+      {isMobile && (section === 'list' || section === 'create') && (
         <BottomNavigation
           value={section === 'list' ? 0 : 1}
           showLabels
@@ -1003,6 +1153,85 @@ export default function Dashboard() {
           />
         </BottomNavigation>
       )}
+
+      <Dialog open={editUserOpen} onClose={() => { setEditUserOpen(false); setEditUserRow(null); }} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 2 } }}>
+        <DialogTitle>Editar usuario{editUserRow ? `: ${editUserRow.username}` : ''}</DialogTitle>
+        <form onSubmit={handleSaveEditUser}>
+          <DialogContent>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, pt: 0.5 }}>
+              <TextField
+                type="email"
+                label="Email"
+                value={editUserForm.email}
+                onChange={(e) => setEditUserForm((f) => ({ ...f, email: e.target.value }))}
+              />
+              <TextField
+                type="password"
+                label="Nueva contraseña (opcional)"
+                value={editUserForm.password}
+                onChange={(e) => setEditUserForm((f) => ({ ...f, password: e.target.value }))}
+                autoComplete="new-password"
+              />
+              <FormControl fullWidth disabled={editUserRow?.is_superuser}>
+                <InputLabel>Rol</InputLabel>
+                <Select
+                  value={editUserForm.role}
+                  label="Rol"
+                  onChange={(e) => setEditUserForm((f) => ({ ...f, role: e.target.value }))}
+                >
+                  {ROLES.map((r) => (
+                    <MenuItem key={r} value={r}>{r}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+              {editUserRow?.is_superuser && (
+                <Typography variant="caption" color="text.secondary">
+                  El rol del superusuario no se modifica desde aquí.
+                </Typography>
+              )}
+              <FormControl fullWidth>
+                <InputLabel id="edit-uproj-label">Proyectos asignados</InputLabel>
+                <Select
+                  labelId="edit-uproj-label"
+                  multiple
+                  value={editUserForm.proyectoIds}
+                  onChange={(e) =>
+                    setEditUserForm((f) => ({
+                      ...f,
+                      proyectoIds: typeof e.target.value === 'string' ? e.target.value.split(',').map(Number) : e.target.value.map(Number),
+                    }))}
+                  input={<OutlinedInput label="Proyectos asignados" />}
+                  renderValue={(selected) =>
+                    proyectosDisponibles
+                      .filter((pr) => selected.includes(pr.id))
+                      .map((pr) => pr.nombre)
+                      .join(', ') || 'Ninguno'}
+                >
+                  {proyectosDisponibles.map((pr) => (
+                    <MenuItem key={pr.id} value={pr.id}>
+                      {pr.nombre} ({pr.hospital_nombre})
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            </Box>
+          </DialogContent>
+          <DialogActions sx={{ px: 3, pb: 2 }}>
+            <Button
+              onClick={() => {
+                setEditUserOpen(false);
+                setEditUserRow(null);
+              }}
+              startIcon={<CloseIcon />}
+            >
+              Cerrar
+            </Button>
+            <Button type="submit" variant="contained" disabled={savingUser} startIcon={<EditIcon />}>
+              {savingUser ? '…' : 'Guardar'}
+            </Button>
+          </DialogActions>
+        </form>
+      </Dialog>
 
       <Dialog open={createUserOpen} onClose={() => setCreateUserOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: { borderRadius: 2 } }}>
         <DialogTitle>Crear usuario</DialogTitle>

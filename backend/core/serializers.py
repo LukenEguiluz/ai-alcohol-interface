@@ -4,8 +4,6 @@ from rest_framework import serializers
 
 from .access import (
     GRUPO_ADMIN_PROYECTOS,
-    es_administrador,
-    es_admin_proyectos_globales,
     puede_usar_proyecto,
     simulated_role,
 )
@@ -16,6 +14,16 @@ from .models import (
     Paciente,
     VideoPaciente,
 )
+
+# Roles de grupo Django (registro, edición admin); mantener alineado con migraciones y frontend.
+ROLES_ASIGNABLE = [
+    'Administrador',
+    'Administrador de proyectos',
+    'Doctor',
+    'Residente',
+    'Psicologo',
+    'Otro',
+]
 
 
 class HospitalSerializer(serializers.ModelSerializer):
@@ -116,9 +124,8 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_role(self, obj):
         request = self.context.get('request')
-        sim = simulated_role(request) if request else None
-        if sim is not None:
-            return sim
+        if request and simulated_role(request) is not None and getattr(request.user, 'pk', None) == obj.pk:
+            return simulated_role(request)
         if obj.is_superuser:
             return 'Superusuario'
         names = list(obj.groups.values_list('name', flat=True))
@@ -130,19 +137,26 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_todos_los_proyectos(self, obj):
         request = self.context.get('request')
-        if request:
-            return bool(es_admin_proyectos_globales(request))
-        return bool(obj.is_superuser or obj.groups.filter(name=GRUPO_ADMIN_PROYECTOS).exists())
+        if request and getattr(request.user, 'pk', None) == obj.pk:
+            va = simulated_role(request)
+            if va is not None:
+                return va == GRUPO_ADMIN_PROYECTOS
+        if obj.is_superuser:
+            return True
+        return obj.groups.filter(name=GRUPO_ADMIN_PROYECTOS).exists()
 
     def get_puede_administrar_plataforma(self, obj):
         request = self.context.get('request')
-        if request:
-            return bool(es_administrador(request))
-        if not obj.is_authenticated:
+        if request and getattr(request.user, 'pk', None) == obj.pk:
+            va = simulated_role(request)
+            if va is not None:
+                return va in ('Administrador', GRUPO_ADMIN_PROYECTOS)
+        if not getattr(obj, 'is_authenticated', True):
             return False
-        if obj.is_superuser:
+        if getattr(obj, 'is_superuser', False):
             return True
-        return obj.groups.filter(name='Administrador').exists()
+        names = set(obj.groups.values_list('name', flat=True))
+        return 'Administrador' in names or GRUPO_ADMIN_PROYECTOS in names
 
     def get_proyectos(self, obj):
         if self.get_todos_los_proyectos(obj):
@@ -246,4 +260,63 @@ class VideoPacienteUploadSerializer(serializers.ModelSerializer):
                 f'El archivo supera el máximo permitido ({mb} MB). '
                 'Para Full HD ~2 min a 60 Hz, reduce bitrate o recorta el vídeo.'
             )
+        return value
+
+
+class AdminUserReadSerializer(serializers.ModelSerializer):
+    """Listado/edición de usuarios (sin simulación view-as; datos reales del usuario)."""
+    role = serializers.SerializerMethodField()
+    proyectos = serializers.SerializerMethodField()
+    proyecto_ids = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = (
+            'id',
+            'username',
+            'email',
+            'is_staff',
+            'is_superuser',
+            'role',
+            'proyectos',
+            'proyecto_ids',
+        )
+
+    def get_role(self, obj):
+        if obj.is_superuser:
+            return 'Superusuario'
+        names = list(obj.groups.values_list('name', flat=True))
+        if 'Administrador' in names:
+            return 'Administrador'
+        if GRUPO_ADMIN_PROYECTOS in names:
+            return GRUPO_ADMIN_PROYECTOS
+        return names[0] if names else None
+
+    def get_proyectos(self, obj):
+        qs = obj.proyectos_asignados.filter(activo=True).select_related('hospital', 'especialidad')
+        return ProyectoMiniSerializer(qs, many=True).data
+
+    def get_proyecto_ids(self, obj):
+        return list(obj.proyectos_asignados.filter(activo=True).values_list('id', flat=True))
+
+
+class AdminUserPatchSerializer(serializers.Serializer):
+    email = serializers.EmailField(required=False, allow_blank=True)
+    password = serializers.CharField(required=False, allow_blank=True, write_only=True, trim_whitespace=False)
+    role = serializers.CharField(required=False, allow_blank=True)
+    proyecto_ids = serializers.ListField(child=serializers.IntegerField(), required=False)
+
+    def validate_role(self, value):
+        if not value:
+            return value
+        if value not in ROLES_ASIGNABLE:
+            raise serializers.ValidationError('Rol no válido.')
+        return value
+
+    def validate_proyecto_ids(self, value):
+        if value is None:
+            return value
+        found = set(Proyecto.objects.filter(id__in=value, activo=True).values_list('id', flat=True))
+        if found != set(value):
+            raise serializers.ValidationError('Uno o más proyectos no existen o están inactivos.')
         return value

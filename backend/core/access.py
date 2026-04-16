@@ -20,16 +20,16 @@ def simulated_role(request):
 
 
 def es_administrador(request) -> bool:
-    """Gestión de plataforma: superusuario o rol Administrador (salvo simulación)."""
+    """Gestión de plataforma: superusuario, Administrador o Administrador de proyectos (salvo simulación)."""
     va = simulated_role(request)
     if va is not None:
-        return va == 'Administrador'
+        return va in ('Administrador', GRUPO_ADMIN_PROYECTOS)
     user = getattr(request, 'user', None)
     if not user or not user.is_authenticated:
         return False
     if user.is_superuser:
         return True
-    return user.groups.filter(name='Administrador').exists()
+    return user.groups.filter(name__in=('Administrador', GRUPO_ADMIN_PROYECTOS)).exists()
 
 
 def es_admin_proyectos_globales(request) -> bool:
